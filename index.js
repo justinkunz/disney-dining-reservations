@@ -4,13 +4,17 @@ require("dotenv").config();
 const startDate = "2024-01-29"; // YYYY-MM-DD format
 const stayLengthDays = 5;
 const partySize = 2;
-const checkIntervalMs = 10000;
+const checkIntervalMs = 5000;
+const maxReservationDatesSent = 3;
 
 const enableSMS = false;
 const enablePush = true;
+const enableAudio = true;
 const enableNotifAudio = true;
 const enableTTSAudio = true;
 const overrideMute = true;
+
+const notifFrequencyMs = 19000;
 
 // place target names in here, the rest is Disney Magic 🪄 (must exact match mousedining.com)
 const restaurantNames = [
@@ -40,6 +44,18 @@ const push = new Pushover({
   user: process.env.PUSHOVER_USER,
 });
 
+const deliveredNotifs = {};
+
+const shouldSendNotif = (...notifArgs) => {
+  const key = notifArgs.join("-");
+  if (!deliveredNotifs[key]) return true; // hasn't been sent yet, so send
+  return Date.now() - deliveredNotifs[key] >= notifFrequencyMs;
+};
+
+const recordNotifSend = (...notifArgs) => {
+  const key = notifArgs.join("-");
+  deliveredNotifs[key] = Date.now();
+};
 const sendNotif = (restName, date, breakfast, brunch, lunch, dinner, link) => {
   if (!enablePush) return;
 
@@ -62,10 +78,8 @@ const sendNotif = (restName, date, breakfast, brunch, lunch, dinner, link) => {
     day: "numeric",
   }).format(new Date(`${date}T00:00:00-06:00`));
 
-  push.send(
-    `🔴 🍽️ ${restName}`,
-    `${formattedDate} - ${availabilityBody} \n\n${link}`
-  );
+  const notifText = `${formattedDate} - ${availabilityBody} \n\n${link}`;
+  push.send(`🔴 🍽️ ${restName}`, notifText);
 };
 
 const SMS_THRES = 5;
@@ -124,15 +138,19 @@ const sendReservationSMS = (
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+let isPlaying = false;
 const playNotifAudio = async (name, date, breakfast, brunch, lunch, dinner) => {
-  if (!enableNotifAudio && !enableTTSAudio) return;
+  if (isPlaying || !enableAudio || (!enableNotifAudio && !enableTTSAudio))
+    return;
 
   // unmute if muted
   if (overrideMute) execSync('osascript -e "set volume without output muted"');
 
   if (enableNotifAudio) {
+    isPlaying = true;
     player().play("notif.wav");
     await sleep(2000); // playback notif sound first
+    isPlaying = false;
   }
 
   if (!enableTTSAudio) return;
@@ -174,7 +192,9 @@ const playNotifAudio = async (name, date, breakfast, brunch, lunch, dinner) => {
   }
 
   fs.writeFileSync(ttsNotifPath, data);
+  isPlaying = true;
   player().play(ttsNotifPath);
+  setTimeout(() => (isPlaying = false), 7000);
 
   setTimeout(() => {
     fs.rmSync(ttsNotifPath);
@@ -209,15 +229,18 @@ const checkRestaurant = async (rest) => {
   try {
     console.log(`checking ${rest.name}`);
     const { data } = await axios(rest.requestUrl);
-    const opening = data.find(
-      (date) =>
-        (date.MealOpenings.Breakfast && date.MealOpenings.Breakfast !== "0") ||
-        (date.MealOpenings.Lunch && date.MealOpenings.Lunch !== "0") ||
-        (date.MealOpenings.Dinner && date.MealOpenings.Dinner !== "0") ||
-        (date.MealOpenings.Brunch && date.MealOpenings.Brunch !== "0")
-    );
+    const openings = data
+      .filter(
+        (date) =>
+          (date.MealOpenings.Breakfast &&
+            date.MealOpenings.Breakfast !== "0") ||
+          (date.MealOpenings.Lunch && date.MealOpenings.Lunch !== "0") ||
+          (date.MealOpenings.Dinner && date.MealOpenings.Dinner !== "0") ||
+          (date.MealOpenings.Brunch && date.MealOpenings.Brunch !== "0")
+      )
+      .slice(0, maxReservationDatesSent);
 
-    if (opening) {
+    openings.map((opening) => {
       recordOpening(rest.name, opening);
 
       const notifArgs = [
@@ -230,10 +253,15 @@ const checkRestaurant = async (rest) => {
         rest.reservationUrl,
       ];
 
-      playNotifAudio(...notifArgs);
-      sendNotif(...notifArgs);
-      sendReservationSMS(...notifArgs);
-    }
+      if (shouldSendNotif(...notifArgs)) {
+        recordNotifSend(...notifArgs);
+        playNotifAudio(...notifArgs);
+        sendNotif(...notifArgs);
+        sendReservationSMS(...notifArgs);
+      } else {
+        console.log("Preventing duplicate notif send");
+      }
+    });
   } catch (err) {
     console.error("Error checking", rest.name);
   }
