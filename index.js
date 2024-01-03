@@ -9,10 +9,14 @@ const maxReservationDatesSent = 3;
 
 const enableSMS = false;
 const enablePush = true;
+
 const enableAudio = true;
 const enableNotifAudio = true;
 const enableTTSAudio = true;
 const overrideMute = true;
+
+const sendStillAlivePushNotif = false;
+const stillAlivePushNotifFrequencyMs = 120_000;
 
 const notifFrequencyMs = 19000;
 
@@ -267,35 +271,47 @@ const checkRestaurant = async (rest) => {
   }
 };
 
+const stillAlivePushNotif = () => {
+  if (!sendStillAlivePushNotif) return;
+  setTimeout(() => {
+    push.send("Disney Reservation Check", "Report is still alive");
+  }, stillAlivePushNotifFrequencyMs);
+};
+
 const setup = async () => {
-  if (!enablePush && !enableSMS && !enableNotifAudio && !enableTTSAudio)
-    console.warn("No notif targets set");
+  try {
+    if (!enablePush && !enableSMS && !enableNotifAudio && !enableTTSAudio)
+      console.warn("No notif targets set");
 
-  const { data } = await axios.get("https://mousedining.com/v1/restaurants");
+    const { data } = await axios.get("https://mousedining.com/v1/restaurants");
 
-  const restaurants = restaurantNames
-    .map((name) => {
-      const rest = data.find((rest) => rest.Name === name);
-      if (!rest) {
-        console.warn("Restaurant not found", name);
-        return null;
-      }
+    const restaurants = restaurantNames
+      .map((name) => {
+        const rest = data.find((rest) => rest.Name === name);
+        if (!rest) {
+          console.warn("Restaurant not found", name);
+          return null;
+        }
 
-      return {
-        name,
-        requestUrl: buildReservationUrl(rest.ID),
-        reservationUrl: rest.DisneyUrl,
-      };
-    })
-    .filter((r) => !!r);
+        return {
+          name,
+          requestUrl: buildReservationUrl(rest.ID),
+          reservationUrl: rest.DisneyUrl,
+        };
+      })
+      .filter((r) => !!r);
 
-  const check = () => {
-    console.log(`check #${++checkCount}`);
-    restaurants.forEach(checkRestaurant);
-  };
+    const check = () => {
+      console.log(`check #${++checkCount}`);
+      restaurants.forEach(checkRestaurant);
+    };
 
-  check();
-  setInterval(check, checkIntervalMs);
+    check();
+    stillAlivePushNotif();
+    setInterval(check, checkIntervalMs);
+  } catch (err) {
+    push.send("Disney Reservation Check", "❌ Critical Error");
+  }
 };
 
 setup();
